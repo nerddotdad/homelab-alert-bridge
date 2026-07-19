@@ -90,11 +90,14 @@ def _lazy_list_script(*, kind: str, api_path: str, status_filter: str, checkbox_
       const apiPath = {json.dumps(api_path)};
       const checkboxName = {json.dumps(checkbox_name)};
       const emptyMessage = {json.dumps(empty_message)};
+      const pollMs = 8000;
       let offset = 0;
       let hasMore = true;
       let loading = false;
       let statusFilter = {json.dumps(status_filter)};
       let query = new URLSearchParams(window.location.search).get("q") || "";
+      let knownIds = [];
+      let pollTimer = null;
 
       const rowsEl = document.getElementById("lazy-rows");
       const statusEl = document.getElementById("list-status");
@@ -103,6 +106,43 @@ def _lazy_list_script(*, kind: str, api_path: str, status_filter: str, checkbox_
       const selectAllEl = document.getElementById("select-all");
       let scrollObserver = null;
       let scrollBound = false;
+      let liveBannerEl = null;
+
+      function ensureLiveBanner() {{
+        if (liveBannerEl) return liveBannerEl;
+        liveBannerEl = document.createElement("div");
+        liveBannerEl.className = "panel live-banner";
+        liveBannerEl.hidden = true;
+        liveBannerEl.innerHTML = '<span class="live-banner-text"></span> <button type="button" class="primary">Show updates</button>';
+        liveBannerEl.querySelector("button").addEventListener("click", () => {{
+          liveBannerEl.hidden = true;
+          window.scrollTo({{ top: 0, behavior: "smooth" }});
+          loadRows(false);
+        }});
+        const searchBox = document.querySelector(".search-box");
+        if (searchBox && searchBox.parentNode) {{
+          searchBox.parentNode.insertBefore(liveBannerEl, searchBox);
+        }} else if (rowsEl && rowsEl.parentNode) {{
+          rowsEl.parentNode.insertBefore(liveBannerEl, rowsEl);
+        }}
+        return liveBannerEl;
+      }}
+
+      function showLiveBanner(message) {{
+        const el = ensureLiveBanner();
+        el.querySelector(".live-banner-text").textContent = message;
+        el.hidden = false;
+      }}
+
+      function idsFromRoot(root) {{
+        if (!root) return [];
+        return Array.from(root.querySelectorAll(`input[name="${{checkboxName}}"]`)).map((cb) => cb.value);
+      }}
+
+      function idsEqual(a, b) {{
+        if (a.length !== b.length) return false;
+        return a.every((id, i) => id === b[i]);
+      }}
 
       function ensureSentinel() {{
         if (!rowsEl) return null;
@@ -214,6 +254,7 @@ def _lazy_list_script(*, kind: str, api_path: str, status_filter: str, checkbox_
           offset = 0;
           hasMore = true;
           rowsEl.innerHTML = '<div class="panel muted">Loading…</div>';
+          if (liveBannerEl) liveBannerEl.hidden = true;
         }} else {{
           ensureSentinel()?.classList.add("loading-more");
         }}
@@ -238,10 +279,12 @@ def _lazy_list_script(*, kind: str, api_path: str, status_filter: str, checkbox_
           }}
           offset = data.next_offset || 0;
           hasMore = !!data.has_more;
+          if (!append) knownIds = idsFromRoot(rowsEl);
           const loadedCount = rowsEl.querySelectorAll(".incident-row").length;
-          statusEl.textContent = hasMore
+          const liveHint = " · live";
+          statusEl.textContent = (hasMore
             ? `Showing ${{loadedCount}} — scroll for more`
-            : `Showing all ${{loadedCount}} matches`;
+            : `Showing all ${{loadedCount}} matches`) + liveHint;
         }} catch (err) {{
           if (!append) rowsEl.innerHTML = `<div class="panel"><span class="badge severity-critical">${{err.message}}</span></div>`;
           statusEl.textContent = "";
@@ -253,8 +296,49 @@ def _lazy_list_script(*, kind: str, api_path: str, status_filter: str, checkbox_
         }}
       }}
 
+      async function pollForUpdates() {{
+        if (document.hidden || loading) return;
+        try {{
+          const params = new URLSearchParams({{
+            offset: "0",
+            limit: String(pageSize),
+            status: statusFilter,
+            q: query,
+          }});
+          const resp = await fetch(`${{apiPath}}?${{params}}`, {{ credentials: "same-origin" }});
+          const data = await resp.json();
+          if (!resp.ok) return;
+          const wrap = document.createElement("div");
+          wrap.innerHTML = data.html || "";
+          const freshIds = idsFromRoot(wrap);
+          const baseline = knownIds.slice(0, pageSize);
+          if (idsEqual(freshIds, baseline)) return;
+          const newCount = freshIds.filter((id) => !baseline.includes(id)).length;
+          if (window.scrollY < 140) {{
+            await loadRows(false);
+          }} else {{
+            const label = newCount > 0
+              ? `${{newCount}} new ${{newCount === 1 ? "item" : "items"}} available`
+              : "List updated";
+            showLiveBanner(label);
+          }}
+        }} catch (_err) {{
+          // ignore transient poll errors
+        }}
+      }}
+
+      function startPolling() {{
+        if (pollTimer) clearInterval(pollTimer);
+        pollTimer = setInterval(pollForUpdates, pollMs);
+      }}
+
+      document.addEventListener("visibilitychange", () => {{
+        if (!document.hidden) pollForUpdates();
+      }});
+
       bindInfiniteScroll();
       loadRows(false);
+      startPolling();
     }})();
     </script>
     """
@@ -509,12 +593,63 @@ def layout(title: str, body: str, *, public_base: str = "") -> str:
       color: var(--ok);
     }}
     .skill-row {{
-      display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
-      justify-content: space-between;
-      padding: 10px 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px 16px;
+      align-items: start;
+      padding: 12px 0;
       border-bottom: 1px solid var(--border);
     }}
     .skill-row:last-child {{ border-bottom: 0; }}
+    .skill-main {{ min-width: 0; }}
+    .skill-actions {{
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 8px;
+      align-items: center;
+      justify-content: flex-end;
+      flex-shrink: 0;
+    }}
+    .skill-actions form {{ display: inline; margin: 0; }}
+    .skill-desc {{
+      color: var(--muted);
+      font-size: 0.92rem;
+      margin-top: 4px;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
+    }}
+    .skill-desc.is-expanded {{
+      display: block;
+      -webkit-line-clamp: unset;
+      line-clamp: unset;
+      overflow: visible;
+    }}
+    .skill-more {{
+      background: none;
+      border: 0;
+      color: var(--accent);
+      padding: 0;
+      margin-top: 4px;
+      cursor: pointer;
+      font: inherit;
+    }}
+    .skill-more:hover {{ text-decoration: underline; }}
+    .live-banner {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+      border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+      background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+    }}
+    @media (max-width: 700px) {{
+      .skill-row {{ grid-template-columns: 1fr; }}
+      .skill-actions {{ justify-content: flex-start; }}
+    }}
   </style>
 </head>
 <body>
@@ -1106,21 +1241,28 @@ def settings_page(
             enabled = skill.get("enabled", True)
             toggle_to = "false" if enabled else "true"
             toggle_label = "Disable" if enabled else "Enable"
+            more_btn = ""
+            if len(desc) > 140:
+                more_btn = (
+                    '<button type="button" class="skill-more" data-skill-more>'
+                    "Read more</button>"
+                )
             rows.append(
                 f"""
                 <div class="skill-row">
-                  <div>
+                  <div class="skill-main">
                     <strong>{_esc(name)}</strong>
                     <span class="badge {"status-resolved" if enabled else "status-merged"}">{"on" if enabled else "off"}</span>
-                    <div class="muted">{_esc(desc)}</div>
+                    <div class="skill-desc">{_esc(desc)}</div>
+                    {more_btn}
                   </div>
-                  <div class="actions">
-                    <form method="post" action="/settings/aiops/skills/toggle" style="display:inline;">
+                  <div class="skill-actions">
+                    <form method="post" action="/settings/aiops/skills/toggle">
                       <input type="hidden" name="name" value="{_esc(name)}">
                       <input type="hidden" name="enabled" value="{toggle_to}">
                       <button type="submit">{_esc(toggle_label)}</button>
                     </form>
-                    <form method="post" action="/settings/aiops/skills/delete" style="display:inline;" onsubmit="return confirm('Delete skill {_esc(name)}?');">
+                    <form method="post" action="/settings/aiops/skills/delete" onsubmit="return confirm('Delete skill {_esc(name)}?');">
                       <input type="hidden" name="name" value="{_esc(name)}">
                       <button type="submit">Delete</button>
                     </form>
@@ -1142,6 +1284,18 @@ def settings_page(
             <div class="actions"><button class="primary" type="submit">Save skill</button></div>
           </form>
         </div>
+        <script>
+        (function() {{
+          document.querySelectorAll("[data-skill-more]").forEach((btn) => {{
+            btn.addEventListener("click", () => {{
+              const desc = btn.parentElement && btn.parentElement.querySelector(".skill-desc");
+              if (!desc) return;
+              const open = desc.classList.toggle("is-expanded");
+              btn.textContent = open ? "Show less" : "Read more";
+            }});
+          }});
+        }})();
+        </script>
         """
 
     def _memory_panel() -> str:
