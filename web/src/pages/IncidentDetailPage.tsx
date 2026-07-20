@@ -1,8 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { Icon } from '../components/Icon'
 import { SeverityBadge, StatusBadge } from '../components/StatusBadge'
 import { api } from '../lib/api/client'
+import { faCircleCheck, faRobot, faRotate } from '../lib/icons'
 
 export function IncidentDetailPage() {
   const { id = '' } = useParams()
@@ -13,7 +15,6 @@ export function IncidentDetailPage() {
     queryKey: ['incident', id],
     queryFn: () => api.getIncident(id),
     enabled: Boolean(id),
-    refetchInterval: 5000,
   })
 
   const invalidate = () => {
@@ -77,16 +78,16 @@ export function IncidentDetailPage() {
           <div className="actions">
             {status === 'open' ? (
               <button className="primary" type="button" onClick={() => ack.mutate()} disabled={ack.isPending}>
-                Acknowledge
+                <Icon icon={faRotate} /> Acknowledge
               </button>
             ) : null}
             {status === 'open' || status === 'acknowledged' ? (
               <button type="button" onClick={() => resolve.mutate()} disabled={resolve.isPending}>
-                Resolve
+                <Icon icon={faCircleCheck} /> Resolve
               </button>
             ) : null}
             <button type="button" onClick={() => investigate.mutate()} disabled={investigate.isPending}>
-              Investigate
+              <Icon icon={faRobot} /> Investigate
             </button>
           </div>
         </div>

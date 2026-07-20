@@ -1,8 +1,10 @@
 import { useInfiniteQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { Icon } from '../components/Icon'
 import { SeverityBadge, StatusBadge } from '../components/StatusBadge'
 import { api } from '../lib/api/client'
+import { faMagnifyingGlass } from '../lib/icons'
 
 const STATUSES = [
   { value: '', label: 'all' },
@@ -22,7 +24,6 @@ export function IncidentsPage() {
     queryFn: ({ pageParam }) =>
       api.listIncidents({ status, q: search, offset: pageParam, limit: 25 }),
     getNextPageParam: (last) => (last.has_more ? last.next_offset : undefined),
-    refetchInterval: 8000,
   })
 
   const incidents = useMemo(
@@ -68,7 +69,7 @@ export function IncidentsPage() {
           />
           <div className="actions">
             <button className="primary" type="submit">
-              Search
+              <Icon icon={faMagnifyingGlass} /> Search
             </button>
             {search ? (
               <button

@@ -135,6 +135,39 @@ textarea {
   font-size: 0.92rem;
 }
 
+.header-right {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.live-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.live-pill.live-live {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
+}
+
+.live-pill.live-reconnect,
+.live-pill.live-connecting {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+}
+
 .site-nav {
   display: flex;
   flex-wrap: wrap;
@@ -144,6 +177,7 @@ textarea {
 .site-nav a {
   display: inline-flex;
   align-items: center;
+  gap: 8px;
   min-height: 36px;
   padding: 6px 12px;
   border-radius: 10px;

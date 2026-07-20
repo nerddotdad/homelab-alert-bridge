@@ -29,6 +29,8 @@ cd web && npm install && npm run dev
 
 Production image builds `web/` and serves `web/dist` from the same process (`HEARTH_STATIC`). Set `HEARTH_LEGACY_UI=1` to force the old `ui.py` pages.
 
+**Live UI:** the SPA listens to `GET /api/events` (SSE) for incident/alert/settings changes — no list polling. Icons use free Font Awesome (`@fortawesome/free-*-svg-icons`).
+
 ## Flow
 
 ```text

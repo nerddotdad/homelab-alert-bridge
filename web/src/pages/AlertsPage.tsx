@@ -1,8 +1,10 @@
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Icon } from '../components/Icon'
 import { SeverityBadge, StatusBadge } from '../components/StatusBadge'
 import { api, type Alert } from '../lib/api/client'
+import { faFire, faTicket } from '../lib/icons'
 
 const STATUSES = [
   { value: '', label: 'all' },
@@ -32,7 +34,6 @@ export function AlertsPage() {
     queryFn: ({ pageParam }) =>
       api.listAlerts({ status, q: search, offset: pageParam, limit: 25 }),
     getNextPageParam: (last) => (last.has_more ? last.next_offset : undefined),
-    refetchInterval: 8000,
   })
 
   const alerts = useMemo(
@@ -102,7 +103,7 @@ export function AlertsPage() {
               disabled={!selected.size || raise.isPending}
               onClick={() => raise.mutate()}
             >
-              Raise incident ({selected.size})
+              <Icon icon={faTicket} /> Raise incident ({selected.size})
             </button>
           </div>
         </form>
@@ -133,7 +134,10 @@ export function AlertsPage() {
                 </div>
               </div>
               <StatusBadge status={alert.status} />
-              <SeverityBadge severity={alertSeverity(alert)} />
+              <span className="actions">
+                {(alert.status || '').toLowerCase() === 'firing' ? <Icon icon={faFire} /> : null}
+                <SeverityBadge severity={alertSeverity(alert)} />
+              </span>
               <div className="muted">{alert.updated_at || alert.startsAt || '—'}</div>
               <div className="muted">{alert.labels?.namespace || ''}</div>
             </label>

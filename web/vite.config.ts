@@ -6,7 +6,12 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://127.0.0.1:8000',
+      // SSE needs a long-lived proxy (no timeout buffering).
+      '/api': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+        timeout: 0,
+      },
       '/health': 'http://127.0.0.1:8000',
       '/hook': 'http://127.0.0.1:8000',
       '/homelab': 'http://127.0.0.1:8000',

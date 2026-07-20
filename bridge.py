@@ -14,6 +14,7 @@ from pathlib import Path
 
 from config import get_config, init_config
 from db import IncidentStore
+from events import BUS, publish_ui
 from filters import ignored_summary
 from hermes_client import HermesError
 from incidents import IncidentService, safe_id
@@ -134,12 +135,19 @@ def _maybe_auto_triage(incident_id: str, event: str) -> None:
 def _notify_and_triage(incident_id: str, event: str) -> None:
     NOTIFIER.notify(incident_id, event)
     _maybe_auto_triage(incident_id, event)
+    publish_ui("incidents", incident_id=incident_id, reason=event)
 
 
 def _notify_many_and_triage(events: list[tuple[str, str]]) -> None:
     NOTIFIER.notify_many(events)
     for incident_id, event in events:
         _maybe_auto_triage(incident_id, event)
+    if events:
+        publish_ui(
+            "incidents",
+            reason="batch",
+            incident_ids=sorted({iid for iid, _ in events}),
+        )
 
 
 def _handle_alertmanager_hook(payload: dict) -> tuple[int, bytes]:
@@ -147,6 +155,7 @@ def _handle_alertmanager_hook(payload: dict) -> tuple[int, bytes]:
 
     def ingest(p: dict) -> list:
         events = SERVICE.ingest_alertmanager_payload(p)
+        publish_ui("alerts", reason="webhook")
         if events:
             ids = ", ".join(sorted({iid for iid, _ in events}))
             sys.stderr.write(f"incidents touched: {ids}\n")
@@ -395,6 +404,23 @@ class Handler(BaseHTTPRequestHandler):
                     flash_message=flash_message,
                 ),
             )
+            return
+
+        if path == "/api/events":
+            if not self._require_api_auth(query):
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            try:
+                for chunk in BUS.stream():
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
             return
 
         if path == "/api/settings":
@@ -863,6 +889,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "updates must be an object"})
                 return
             changed = CONFIG.save_ui(updates)
+            if changed:
+                publish_ui("settings", reason="save", changed=list(changed.keys()))
             self._json(200, {"ok": True, "changed": list(changed.keys()), "groups": CONFIG.snapshot()})
             return
 
@@ -905,6 +933,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if kind != "already_raised":
                 _notify_and_triage(incident["id"], "created" if kind == "created" else "updated")
+            else:
+                publish_ui("incidents", "alerts", incident_id=incident["id"], reason="already_raised")
+            publish_ui("alerts", reason="raise")
             self._json(200, {"ok": True, "kind": kind, "incident": incident})
             return
 
@@ -1097,6 +1128,7 @@ class Handler(BaseHTTPRequestHandler):
             if incident is None:
                 self._json(404, {"error": "incident not found", "id": target_id})
                 return
+            publish_ui("incidents", incident_id=target_id, reason="merged")
             self._json(200, incident)
             return
 
@@ -1108,6 +1140,7 @@ class Handler(BaseHTTPRequestHandler):
             if incident is None:
                 self._json(404, {"error": "incident not found", "id": iid})
                 return
+            publish_ui("incidents", incident_id=iid, reason="acknowledged")
             self._json(200, incident)
             return
 
@@ -1119,6 +1152,7 @@ class Handler(BaseHTTPRequestHandler):
             if incident is None:
                 self._json(404, {"error": "incident not found", "id": iid})
                 return
+            publish_ui("incidents", incident_id=iid, reason="resolved")
             self._json(200, incident)
             return
 
@@ -1139,6 +1173,7 @@ class Handler(BaseHTTPRequestHandler):
             except HermesError as exc:
                 self._json(502, {"error": "hermes investigation failed", "detail": str(exc)})
                 return
+            publish_ui("incidents", incident_id=iid, reason="investigate")
             self._json(200, result)
             return
 
@@ -1154,6 +1189,7 @@ class Handler(BaseHTTPRequestHandler):
             if incident is None:
                 self._json(404, {"error": "incident not found", "id": iid})
                 return
+            publish_ui("incidents", incident_id=iid, reason="note")
             self._json(200, incident)
             return
 

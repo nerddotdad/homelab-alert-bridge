@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
+import { Icon } from '../components/Icon'
 import { api, type SettingsField } from '../lib/api/client'
+import { faFloppyDisk } from '../lib/icons'
 
 type Tab = 'general' | 'integrations' | 'aiops' | 'auto-raise' | 'display'
 
@@ -226,7 +228,7 @@ export function SettingsPage() {
                   ])
                 }
               >
-                Save general
+                <Icon icon={faFloppyDisk} /> Save general
               </button>
             </div>
           </div>
@@ -371,6 +373,10 @@ export function SettingsPage() {
       {tab === 'auto-raise' ? (
         <div className="panel">
           <h2 style={{ marginTop: 0 }}>Auto-raise rules</h2>
+          <p className="muted">
+            Alerts below the minimum severity stay in the inbox until you raise them manually.
+            After a fresh volume, defaults reset to <code>critical</code>.
+          </p>
           <div className="grid">
             <BoolToggle
               field={autoRaise['auto_raise.enabled']}
@@ -382,11 +388,49 @@ export function SettingsPage() {
               checked={Boolean(val('auto_raise.group_open', autoRaise['auto_raise.group_open']))}
               onChange={(v) => setDraft((d) => ({ ...d, 'auto_raise.group_open': v }))}
             />
+            {autoRaise['auto_raise.min_severity'] ? (
+              <div className="field">
+                <label>{autoRaise['auto_raise.min_severity'].label}</label>
+                {autoRaise['auto_raise.min_severity'].hint ? (
+                  <div className="muted">{autoRaise['auto_raise.min_severity'].hint}</div>
+                ) : null}
+                <select
+                  value={String(val('auto_raise.min_severity', autoRaise['auto_raise.min_severity']))}
+                  onChange={(e) =>
+                    setDraft((d) => ({ ...d, 'auto_raise.min_severity': e.target.value }))
+                  }
+                >
+                  {['critical', 'warning', 'info', 'unknown'].map((s) => (
+                    <option key={s} value={s}>
+                      {s} and above
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
+            <FieldInput
+              field={autoRaise['auto_raise.alertnames']}
+              value={String(val('auto_raise.alertnames', autoRaise['auto_raise.alertnames']))}
+              onChange={(v) => setDraft((d) => ({ ...d, 'auto_raise.alertnames': v }))}
+            />
+            <FieldInput
+              field={autoRaise['auto_raise.label_rules']}
+              value={String(val('auto_raise.label_rules', autoRaise['auto_raise.label_rules']))}
+              onChange={(v) => setDraft((d) => ({ ...d, 'auto_raise.label_rules': v }))}
+            />
             <div className="actions">
               <button
                 className="primary"
                 type="button"
-                onClick={() => saveKeys(['auto_raise.enabled', 'auto_raise.group_open'])}
+                onClick={() =>
+                  saveKeys([
+                    'auto_raise.enabled',
+                    'auto_raise.group_open',
+                    'auto_raise.min_severity',
+                    'auto_raise.alertnames',
+                    'auto_raise.label_rules',
+                  ])
+                }
               >
                 Save auto-raise
               </button>
