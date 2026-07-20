@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import re
 import sys
@@ -35,11 +36,17 @@ DB_PATH = Path(os.environ.get("INCIDENT_DB", str(INCIDENT_DIR / "incidents.db"))
 PENDING_ID_FILE = INCIDENT_DIR / ".pending_incident"
 HTTP_PORT = int(os.environ.get("HTTP_PORT", "8000"))
 MAX_BODY = int(os.environ.get("MAX_BODY_BYTES", str(2 * 1024 * 1024)))
+STATIC_DIR = Path(os.environ.get("HEARTH_STATIC", str(Path(__file__).resolve().parent / "web" / "dist")))
+LEGACY_UI = os.environ.get("HEARTH_LEGACY_UI", "").strip().lower() in ("1", "true", "yes", "on")
 APP_VERSION = Path(__file__).with_name("VERSION")
 try:
     VERSION = APP_VERSION.read_text(encoding="utf-8").strip() or "6.0.0"
 except OSError:
     VERSION = "6.0.0"
+
+
+def _spa_enabled() -> bool:
+    return (not LEGACY_UI) and (STATIC_DIR / "index.html").is_file()
 
 CONFIG = init_config(INCIDENT_DIR / "hearth_settings.json", legacy_dir=INCIDENT_DIR)
 REGISTRY = init_registry()
@@ -236,6 +243,42 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _send_file(self, path: Path, *, status: int = 200) -> None:
+        data = path.read_bytes()
+        content_type, _ = mimetypes.guess_type(str(path))
+        if path.suffix == ".js":
+            content_type = "text/javascript; charset=utf-8"
+        elif path.suffix == ".css":
+            content_type = "text/css; charset=utf-8"
+        elif path.suffix == ".svg":
+            content_type = "image/svg+xml"
+        elif path.name == "index.html" or path.suffix == ".html":
+            content_type = "text/html; charset=utf-8"
+        self._send_bytes(status, data, content_type or "application/octet-stream")
+
+    def _try_static(self, path: str) -> bool:
+        if not STATIC_DIR.is_dir():
+            return False
+        rel = path.lstrip("/")
+        if not rel or rel.endswith("/"):
+            return False
+        candidate = (STATIC_DIR / rel).resolve()
+        try:
+            candidate.relative_to(STATIC_DIR.resolve())
+        except ValueError:
+            return False
+        if candidate.is_file():
+            self._send_file(candidate)
+            return True
+        return False
+
+    def _serve_spa(self) -> None:
+        index = STATIC_DIR / "index.html"
+        if index.is_file():
+            self._send_file(index)
+            return
+        self._json(503, {"error": "ui not built", "hint": "run npm run build in web/"})
+
     def _read_json_body(self) -> tuple[dict | None, int | None]:
         length = int(self.headers.get("Content-Length", "0"))
         if length > MAX_BODY:
@@ -306,8 +349,15 @@ class Handler(BaseHTTPRequestHandler):
             self._redirect("/")
             return
 
+        if path.startswith("/assets/") or path in ("/favicon.svg", "/favicon.ico"):
+            if self._try_static(path):
+                return
+
         if path == "/":
             if not self._require_ui_auth():
+                return
+            if _spa_enabled():
+                self._serve_spa()
                 return
             params = urllib.parse.parse_qs(query)
             status_filter = (params.get("status") or [""])[0]
@@ -331,6 +381,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/settings":
             if not self._require_ui_auth():
+                return
+            if _spa_enabled():
+                self._serve_spa()
                 return
             params = urllib.parse.parse_qs(query)
             flash_message = (params.get("msg") or [""])[0]
@@ -395,6 +448,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/alerts":
             if not self._require_ui_auth():
                 return
+            if _spa_enabled():
+                self._serve_spa()
+                return
             params = urllib.parse.parse_qs(query)
             status_filter = (params.get("status") or [""])[0]
             search_query = (params.get("q") or [""])[0]
@@ -412,6 +468,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/incidents/new":
             if not self._require_ui_auth():
                 return
+            if _spa_enabled():
+                self._serve_spa()
+                return
             self._html(200, create_incident_page())
             return
 
@@ -424,6 +483,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.startswith("/incidents/"):
             if not self._require_ui_auth():
+                return
+            if _spa_enabled():
+                self._serve_spa()
                 return
             iid = safe_id(path[len("/incidents/") :].strip("/"))
             incident = STORE.get_incident(iid)
@@ -567,6 +629,31 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/api/alerts":
+            if not self._require_api_auth(query):
+                return
+            params = urllib.parse.parse_qs(query)
+            offset, limit, status_filter, search_query = _list_params(params)
+            try:
+                alerts, has_more, next_offset = SERVICE.list_inbox(
+                    status=status_filter or None,
+                    query=search_query,
+                    offset=offset,
+                    limit=limit,
+                )
+            except ValueError as exc:
+                self._json(400, {"error": str(exc)})
+                return
+            self._json(
+                200,
+                {
+                    "alerts": alerts,
+                    "has_more": has_more,
+                    "next_offset": next_offset,
+                },
+            )
+            return
+
         if path == "/api/incidents":
             if not self._require_api_auth(query):
                 return
@@ -598,6 +685,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/homelab/api/pending-incident":
             iid = self._take_pending_incident()
             self._json(200, {"incident_id": iid})
+            return
+
+        if self._try_static(path):
+            return
+        if _spa_enabled() and not path.startswith(("/api/", "/homelab/", "/hook")):
+            if not self._require_ui_auth():
+                return
+            self._serve_spa()
             return
 
         self._json(404, {"error": "not found"})
@@ -784,6 +879,33 @@ class Handler(BaseHTTPRequestHandler):
                 200 if status.ok else 502,
                 {"ok": status.ok, "message": status.message, "detail": status.detail},
             )
+            return
+
+        if path == "/api/alerts/raise":
+            if not self._require_api_auth(query):
+                return
+            payload, err = self._read_json_body()
+            if err:
+                self._json(err, {"error": "invalid request"})
+                return
+            fingerprints = payload.get("fingerprints") or payload.get("fingerprint") or []
+            if isinstance(fingerprints, str):
+                fingerprints = [fingerprints]
+            if not isinstance(fingerprints, list):
+                fingerprints = []
+            title = str(payload.get("title") or "").strip() or None
+            incident, kind = SERVICE.raise_from_alerts(
+                [str(x) for x in fingerprints],
+                title=title,
+                actor="api",
+                group_open=False,
+            )
+            if incident is None:
+                self._json(400, {"error": "could not raise incident"})
+                return
+            if kind != "already_raised":
+                _notify_and_triage(incident["id"], "created" if kind == "created" else "updated")
+            self._json(200, {"ok": True, "kind": kind, "incident": incident})
             return
 
         if path == "/alerts/raise":

@@ -8,6 +8,27 @@ Homelab incident desk — alerts in, tickets out, agents optional.
 | **Image** | `ghcr.io/nerddotdad/hearth` |
 | **Cluster pin** | [truecharts](https://github.com/nerddotdad/truecharts) → `clusters/.../observability/hearth/` |
 
+## Layout (ClipUp-style)
+
+```text
+hearth/
+├── bridge.py + …     # Python API + static file server
+├── ui.py             # Legacy HTML UI (HEARTH_LEGACY_UI=1)
+└── web/              # Vite + React + TypeScript + React Query SPA
+```
+
+Local UI:
+
+```bash
+# terminal 1 — API
+python3 bridge.py
+
+# terminal 2 — Vite (proxies /api to :8000)
+cd web && npm install && npm run dev
+```
+
+Production image builds `web/` and serves `web/dist` from the same process (`HEARTH_STATIC`). Set `HEARTH_LEGACY_UI=1` to force the old `ui.py` pages.
+
 ## Flow
 
 ```text
