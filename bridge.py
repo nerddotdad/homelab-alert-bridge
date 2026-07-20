@@ -128,7 +128,9 @@ def _maybe_auto_triage(incident_id: str, event: str) -> None:
     REGISTRY.hermes().maybe_auto_triage(
         incident_id,
         event=event,
-        investigate=lambda iid: SERVICE.investigate(iid, force=False, actor="auto_triage"),
+        investigate=lambda iid, force=False: SERVICE.investigate(
+            iid, force=force, actor="auto_triage"
+        ),
     )
 
 
@@ -237,6 +239,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        if content_type.startswith("application/json") or content_type.startswith("text/event-stream"):
+            self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 

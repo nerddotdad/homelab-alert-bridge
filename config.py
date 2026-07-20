@@ -261,7 +261,7 @@ FIELD_DEFS: list[FieldDef] = [
         "bool",
         "hermes",
         "Auto-triage",
-        "When an incident is created, automatically start a Hermes investigation",
+        "Automatically start a Hermes investigation on new incidents and on reopen",
     ),
     FieldDef(
         "hermes.webui_url",

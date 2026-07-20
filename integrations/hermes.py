@@ -117,7 +117,8 @@ class HermesIntegration:
         investigate=None,
     ) -> None:
         """Fire-and-forget investigation when auto-triage is enabled."""
-        if event not in ("created", "manual"):
+        # Reopened = same incident, new occurrence — always start a fresh chat.
+        if event not in ("created", "manual", "reopened"):
             return
         if investigate is None:
             return
@@ -130,10 +131,14 @@ class HermesIntegration:
             )
             return
 
+        force = event == "reopened"
+
         def _run() -> None:
             try:
-                investigate(incident_id)
-                sys.stderr.write(f"auto-triage started incident={incident_id}\n")
+                investigate(incident_id, force=force)
+                sys.stderr.write(
+                    f"auto-triage started incident={incident_id} event={event} force={force}\n"
+                )
             except Exception as exc:
                 sys.stderr.write(f"auto-triage failed incident={incident_id}: {exc}\n")
 

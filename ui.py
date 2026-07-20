@@ -1494,7 +1494,7 @@ def settings_page(
         <form method="post" action="/settings" class="grid">
           <input type="hidden" name="section" value="aiops">
           {_bool_toggle("hermes_enabled", g("hermes", "hermes.enabled"), label="Enable AIOps")}
-          {_bool_toggle("auto_triage", g("hermes", "hermes.auto_triage"), label="Auto-triage new incidents", hint="Start a Hermes investigation automatically when an incident is created")}
+          {_bool_toggle("auto_triage", g("hermes", "hermes.auto_triage"), label="Auto-triage", hint="Start a Hermes investigation on create and on reopen (fresh chat each time)")}
           {_text_input("webui_url", g("hermes", "hermes.webui_url"), input_name="webui_url")}
           {_text_input("webui_password", g("hermes", "hermes.webui_password"), input_name="webui_password")}
           {_text_input("workspace", g("hermes", "hermes.workspace"), input_name="workspace")}

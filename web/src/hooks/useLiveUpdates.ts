@@ -7,7 +7,7 @@ export type LiveStatus = 'connecting' | 'live' | 'reconnect' | 'off'
 
 /**
  * Subscribe to /api/events (SSE) and invalidate React Query caches on push.
- * Replaces list polling for incidents/alerts/settings.
+ * Reconnects catch up by refetching — publishes during a dead stream are otherwise lost.
  */
 export function useLiveUpdates(): LiveStatus {
   const qc = useQueryClient()
@@ -17,7 +17,14 @@ export function useLiveUpdates(): LiveStatus {
     let closed = false
     let source: EventSource | null = null
     let retryTimer: number | undefined
+    let pollTimer: number | undefined
     let attempt = 0
+
+    const refreshLists = () => {
+      void qc.invalidateQueries({ queryKey: ['incidents'] })
+      void qc.invalidateQueries({ queryKey: ['incident'] })
+      void qc.invalidateQueries({ queryKey: ['alerts'] })
+    }
 
     const connect = () => {
       if (closed) return
@@ -28,23 +35,24 @@ export function useLiveUpdates(): LiveStatus {
       source = new EventSource(url)
 
       source.addEventListener('connected', () => {
+        const wasReconnect = attempt > 0
         attempt = 0
         setStatus('live')
+        // Catch up after every (re)connect — events published while offline are gone.
+        if (wasReconnect) refreshLists()
       })
 
-      const onTopic = (topic: 'incidents' | 'alerts' | 'settings') => {
-        void qc.invalidateQueries({ queryKey: [topic === 'settings' ? 'settings' : topic] })
-        if (topic === 'incidents') {
-          void qc.invalidateQueries({ queryKey: ['incident'] })
-        }
-        if (topic === 'settings') {
-          void qc.invalidateQueries({ queryKey: ['aiops-status'] })
-        }
-      }
-
-      source.addEventListener('incidents', () => onTopic('incidents'))
-      source.addEventListener('alerts', () => onTopic('alerts'))
-      source.addEventListener('settings', () => onTopic('settings'))
+      source.addEventListener('incidents', () => {
+        void qc.invalidateQueries({ queryKey: ['incidents'] })
+        void qc.invalidateQueries({ queryKey: ['incident'] })
+      })
+      source.addEventListener('alerts', () => {
+        void qc.invalidateQueries({ queryKey: ['alerts'] })
+      })
+      source.addEventListener('settings', () => {
+        void qc.invalidateQueries({ queryKey: ['settings'] })
+        void qc.invalidateQueries({ queryKey: ['aiops-status'] })
+      })
 
       source.onerror = () => {
         source?.close()
@@ -59,9 +67,21 @@ export function useLiveUpdates(): LiveStatus {
 
     connect()
 
+    // Safety net: soft poll while the tab is visible (covers missed SSE / proxy quirks).
+    pollTimer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') refreshLists()
+    }, 15_000)
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refreshLists()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+
     return () => {
       closed = true
       if (retryTimer) window.clearTimeout(retryTimer)
+      if (pollTimer) window.clearInterval(pollTimer)
+      document.removeEventListener('visibilitychange', onVisible)
       source?.close()
     }
   }, [qc])

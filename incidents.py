@@ -267,13 +267,16 @@ class IncidentService:
         incident_before = str(incident.get("status") or "open")
         reopened = False
         if incident_before == "resolved" and status != "resolved":
+            enrichment = self._archive_hermes_session(dict(incident.get("enrichment") or {}))
             self.store.update_incident(
                 incident_id,
                 status="open",
+                enrichment=enrichment,
                 event_type="reopened",
                 event_detail={"reason": "firing alert received"},
             )
             reopened = True
+            incident = self.store.get_incident(incident_id) or incident
 
         severity = alert_severity(alert)
         if severity and severity_rank(severity) < severity_rank(incident.get("severity")):
@@ -286,7 +289,7 @@ class IncidentService:
             payload=alert,
         )
 
-        enrichment = dict(incident.get("enrichment") or {})
+        enrichment = dict((incident.get("enrichment") if incident else None) or {})
         if receiver and not enrichment.get("receiver"):
             enrichment["receiver"] = receiver
             self.store.update_incident(incident_id, enrichment=enrichment)
@@ -497,12 +500,27 @@ class IncidentService:
         incident = self.store.get_incident(incident_id)
         if incident is None or incident.get("status") == "merged":
             return None
+        enrichment = self._archive_hermes_session(dict(incident.get("enrichment") or {}))
         return self.store.update_incident(
             incident_id,
             status="open",
+            enrichment=enrichment,
             actor=actor,
             event_type="reopened",
         )
+
+    @staticmethod
+    def _archive_hermes_session(enrichment: dict[str, Any]) -> dict[str, Any]:
+        """Detach a prior Hermes chat on reopen so the next investigate starts fresh."""
+        hermes = dict(enrichment.get("hermes") or {})
+        session_id = str(hermes.get("session_id") or "").strip()
+        if not session_id:
+            return enrichment
+        history = list(enrichment.get("hermes_history") or [])
+        history.append(hermes)
+        enrichment["hermes_history"] = history[-20:]
+        enrichment.pop("hermes", None)
+        return enrichment
 
     def enrich(
         self,
@@ -563,6 +581,10 @@ class IncidentService:
         hermes = dict(enrichment.get("hermes") or {})
         if not force and hermes.get("session_id") and hermes.get("status") == "running":
             return self._investigate_result(incident_id, hermes)
+
+        # Starting a new chat — archive any completed/stale session first.
+        if hermes.get("session_id"):
+            enrichment = self._archive_hermes_session(enrichment)
 
         export = self.export_legacy(incident_id)
         if export is None:
