@@ -115,6 +115,23 @@ def _start_investigation(handler: BaseHTTPRequestHandler, iid: str, *, force: bo
     handler._redirect(f"/incidents/{iid}#agent")
 
 
+def _resolve_alert_incident(fingerprint: str) -> dict | None:
+    """Find or raise an incident for an Alertmanager fingerprint (ntfy Ask AI)."""
+    raw = (fingerprint or "").strip()
+    if not raw:
+        return None
+    fp = safe_id(raw)
+    incident = STORE.get_incident_by_fingerprint(fp)
+    if incident is not None:
+        return incident
+    # Fingerprint sometimes used as incident id in older links.
+    incident = STORE.get_incident(fp)
+    if incident is not None:
+        return incident
+    incident, _status = SERVICE.raise_from_alerts([fp], actor="ntfy")
+    return incident
+
+
 def _summarize_hook_payload(payload: dict) -> str:
     alerts = payload.get("alerts") or []
     parts: list[str] = []
@@ -384,6 +401,24 @@ class Handler(BaseHTTPRequestHandler):
                     "integrations": REGISTRY.status_summary(),
                 },
             )
+            return
+
+        # ntfy Ask AI → raise/find incident, optional Investigate, then open UI.
+        if path == "/go/alert":
+            params = urllib.parse.parse_qs(query)
+            fp = (params.get("fingerprint") or [""])[0].strip()
+            investigate_raw = (params.get("investigate") or ["1"])[0].strip().lower()
+            auto = investigate_raw not in ("0", "false", "no", "off")
+            incident = _resolve_alert_incident(fp)
+            if incident is None:
+                q = urllib.parse.quote(fp) if fp else ""
+                self._redirect(f"/alerts?q={q}" if q else "/alerts")
+                return
+            iid = str(incident["id"])
+            if auto:
+                _start_investigation(self, iid, force=False)
+                return
+            self._redirect(f"/incidents/{iid}")
             return
 
         if path == "/login":
@@ -794,7 +829,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if self._try_static(path):
             return
-        if _spa_enabled() and not path.startswith(("/api/", "/homelab/", "/hook")):
+        if _spa_enabled() and not path.startswith(("/api/", "/homelab/", "/hook", "/go/")):
             if not self._require_ui_auth():
                 return
             self._serve_spa()
