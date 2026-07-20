@@ -219,6 +219,20 @@ textarea {
   margin-bottom: 12px;
 }
 
+.filter-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.filter-sep {
+  width: 1px;
+  height: 24px;
+  background: var(--border);
+  margin: 0 2px;
+}
+
 .page-toolbar button.active {
   background: color-mix(in srgb, var(--accent) 22%, var(--panel-2));
   border-color: var(--accent);
@@ -329,7 +343,7 @@ textarea {
 
 .incident-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) auto minmax(7rem, 0.8fr) auto;
+  grid-template-columns: minmax(0, 1.4fr) auto minmax(7rem, 0.7fr) auto auto;
   gap: 12px;
   align-items: center;
   padding: 12px 14px;
@@ -337,16 +351,41 @@ textarea {
   border-radius: 12px;
   background: var(--panel);
   color: inherit;
-  text-decoration: none;
 }
 
 .incident-row:hover {
   border-color: var(--accent);
+}
+
+.row-main {
+  color: inherit;
   text-decoration: none;
+  min-width: 0;
+}
+
+.row-main:hover {
+  text-decoration: none;
+}
+
+.row-main:hover .row-title {
+  color: var(--accent);
 }
 
 .row-title {
   font-weight: 600;
+}
+
+.row-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.row-actions .icon-btn {
+  width: 34px;
+  min-width: 34px;
+  min-height: 34px;
 }
 
 .mono {

@@ -150,7 +150,9 @@ class IncidentStore:
     ) -> tuple[list[dict[str, Any]], bool]:
         clauses = ["1=1"]
         params: list[Any] = []
-        if tab_status:
+        if tab_status in ("active", "unresolved"):
+            clauses.append("i.status IN ('open', 'acknowledged')")
+        elif tab_status:
             clauses.append("i.status = ?")
             params.append(tab_status)
         if not include_merged:

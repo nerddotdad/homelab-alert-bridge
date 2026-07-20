@@ -97,13 +97,26 @@ def _apply_incident_token(field: str, op: str, value: str, out: ParsedQuery) -> 
         out.params.append(1 if truth else 0)
         return
 
+    if field == "agent":
+        # agent:running | agent:complete — Hermes enrichment.hermes.status
+        status = value.lower().strip()
+        if status in ("none", "false", "0", "no"):
+            out.clauses.append(
+                "(json_extract(i.enrichment, '$.hermes.status') IS NULL "
+                "OR json_extract(i.enrichment, '$.hermes.status') = '')"
+            )
+        else:
+            out.clauses.append("json_extract(i.enrichment, '$.hermes.status') = ?")
+            out.params.append(status)
+        return
+
     if field == "tag":
         pattern = f'%"{value}"%'
         out.clauses.append("i.enrichment LIKE ? ESCAPE '\\'")
         out.params.append(pattern)
         return
 
-    if field in ("alertname", "namespace", "severity", "job_name", "pod"):
+    if field in ("alertname", "namespace", "job_name", "pod"):
         col = f"$.labels.{field}"
         if op == "contains":
             out.clauses.append(
