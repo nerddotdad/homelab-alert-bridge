@@ -797,45 +797,196 @@ class IncidentService:
     ) -> None:
         import threading
 
+        from agent_bus import BUS
         from agent_client import AgentError
         from integrations.registry import get_registry
 
         hermes_integ = get_registry().hermes()
+        stream_id = f"agent:{session_id}"
+        BUS.begin(stream_id)
 
         def _run() -> None:
             import time
 
+            parts: list[str] = []
+            tools: list[dict[str, Any]] = []
+            last_write = 0.0
+            run_id: str | None = None
             try:
                 client = hermes_integ.agent_client()
-                parts: list[str] = []
-                last_write = 0.0
-                for delta in client.iter_assistant_stream(
+                caps = client.capabilities()
+                self._set_agent_caps(incident_id, session_id, caps)
+                BUS.publish(stream_id, {"kind": "run", "status": "started"})
+
+                for event in client.iter_turn_events(
                     input_text=input_text,
                     conversation=conversation,
                     instructions=instructions,
+                    session_id=session_id,
                 ):
-                    parts.append(delta)
-                    now = time.time()
-                    if now - last_write >= 1.5:
-                        self._update_agent_partial(incident_id, session_id, "".join(parts))
-                        last_write = now
+                    kind = str(event.get("kind") or "")
+                    if kind == "run" and event.get("run_id"):
+                        run_id = str(event["run_id"])
+                        self._set_agent_run_id(incident_id, session_id, run_id)
+
+                    if kind == "assistant.delta":
+                        delta = str(event.get("delta") or "")
+                        if delta:
+                            parts.append(delta)
+                            now = time.time()
+                            if now - last_write >= 0.4:
+                                self._update_agent_partial(
+                                    incident_id,
+                                    session_id,
+                                    "".join(parts),
+                                    tools=tools,
+                                )
+                                last_write = now
+
+                    elif kind == "tool":
+                        call_id = str(event.get("call_id") or event.get("name") or "")
+                        entry = {
+                            "call_id": call_id,
+                            "name": str(event.get("name") or "tool"),
+                            "phase": str(event.get("phase") or "started"),
+                            "detail": str(event.get("detail") or "")[:500],
+                        }
+                        replaced = False
+                        for i, existing in enumerate(tools):
+                            if existing.get("call_id") == call_id:
+                                tools[i] = {**existing, **entry}
+                                replaced = True
+                                break
+                        if not replaced:
+                            tools.append(entry)
+                        self._update_agent_partial(
+                            incident_id,
+                            session_id,
+                            "".join(parts) or "Agent is working…",
+                            tools=tools,
+                        )
+
+                    BUS.publish(stream_id, event)
+
+                    if kind in ("end", "error"):
+                        break
+
                 reply = "".join(parts).strip()
+                err_msg = None
                 if not reply:
-                    result = client.responses(
-                        input_text=input_text,
-                        conversation=conversation,
-                        instructions=instructions,
-                    )
-                    reply = client.extract_assistant_text(result)
-                self._finish_agent_investigation(incident_id, session_id, reply, error=None)
+                    try:
+                        result = client.responses(
+                            input_text=input_text,
+                            conversation=conversation,
+                            instructions=instructions,
+                        )
+                        reply = client.extract_assistant_text(result)
+                    except AgentError as exc:
+                        err_msg = str(exc)
+                self._finish_agent_investigation(
+                    incident_id,
+                    session_id,
+                    reply,
+                    error=err_msg,
+                    tools=tools,
+                    run_id=run_id,
+                )
+                BUS.publish(
+                    stream_id,
+                    {
+                        "kind": "end",
+                        "status": "error" if err_msg else "complete",
+                        "output": reply,
+                    },
+                )
             except AgentError as exc:
-                self._finish_agent_investigation(incident_id, session_id, "", error=str(exc))
+                self._finish_agent_investigation(incident_id, session_id, "", error=str(exc), tools=tools)
+                BUS.publish(stream_id, {"kind": "error", "message": str(exc)})
+                BUS.publish(stream_id, {"kind": "end", "status": "failed"})
             except Exception as exc:
-                self._finish_agent_investigation(incident_id, session_id, "", error=str(exc))
+                self._finish_agent_investigation(incident_id, session_id, "", error=str(exc), tools=tools)
+                BUS.publish(stream_id, {"kind": "error", "message": str(exc)})
+                BUS.publish(stream_id, {"kind": "end", "status": "failed"})
 
         threading.Thread(target=_run, name=f"hearth-agent-{incident_id}", daemon=True).start()
 
-    def _update_agent_partial(self, incident_id: str, session_id: str, assistant_text: str) -> None:
+    def _set_agent_run_id(self, incident_id: str, session_id: str, run_id: str) -> None:
+        incident = self.store.get_incident(incident_id)
+        if incident is None:
+            return
+        enrichment = dict(incident.get("enrichment") or {})
+        hermes = dict(enrichment.get("hermes") or {})
+        if hermes.get("session_id") != session_id:
+            return
+        hermes["run_id"] = run_id
+        enrichment["hermes"] = hermes
+        self.store.update_incident(incident_id, enrichment=enrichment, actor="bridge")
+
+    def _set_agent_caps(self, incident_id: str, session_id: str, caps: dict[str, Any]) -> None:
+        incident = self.store.get_incident(incident_id)
+        if incident is None:
+            return
+        enrichment = dict(incident.get("enrichment") or {})
+        hermes = dict(enrichment.get("hermes") or {})
+        if hermes.get("session_id") != session_id:
+            return
+        hermes["capabilities_snapshot"] = {
+            "run_submission": bool(caps.get("run_submission")),
+            "run_events_sse": bool(caps.get("run_events_sse")),
+            "run_stop": bool(caps.get("run_stop")),
+            "run_approval": bool(caps.get("run_approval")),
+        }
+        enrichment["hermes"] = hermes
+        self.store.update_incident(incident_id, enrichment=enrichment, actor="bridge")
+
+    def agent_stop(self, incident_id: str, *, actor: str = "ui") -> dict[str, Any]:
+        from agent_client import AgentError
+        from integrations.registry import get_registry
+
+        incident = self.store.get_incident(incident_id)
+        if incident is None:
+            raise ValueError("incident not found")
+        hermes = dict((incident.get("enrichment") or {}).get("hermes") or {})
+        if hermes.get("status") != "running":
+            raise ValueError("Agent is not running")
+        caps = hermes.get("capabilities_snapshot") or {}
+        run_id = str(hermes.get("run_id") or "").strip()
+        if not caps.get("run_stop") or not run_id:
+            raise ValueError("stop_not_supported")
+        try:
+            result = get_registry().hermes().agent_client().stop_run(run_id)
+        except AgentError as exc:
+            raise HermesError(str(exc)) from exc
+        return {"ok": True, "run_id": run_id, "result": result, "actor": actor}
+
+    def agent_approval(
+        self, incident_id: str, body: dict[str, Any], *, actor: str = "ui"
+    ) -> dict[str, Any]:
+        from agent_client import AgentError
+        from integrations.registry import get_registry
+
+        incident = self.store.get_incident(incident_id)
+        if incident is None:
+            raise ValueError("incident not found")
+        hermes = dict((incident.get("enrichment") or {}).get("hermes") or {})
+        caps = hermes.get("capabilities_snapshot") or {}
+        run_id = str(hermes.get("run_id") or "").strip()
+        if not caps.get("run_approval") or not run_id:
+            raise ValueError("approval_not_supported")
+        try:
+            result = get_registry().hermes().agent_client().approve_run(run_id, body or {})
+        except AgentError as exc:
+            raise HermesError(str(exc)) from exc
+        return {"ok": True, "run_id": run_id, "result": result, "actor": actor}
+
+    def _update_agent_partial(
+        self,
+        incident_id: str,
+        session_id: str,
+        assistant_text: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> None:
         """Write in-progress assistant text so the incident UI updates during long Hermes runs."""
         incident = self.store.get_incident(incident_id)
         if incident is None:
@@ -851,6 +1002,8 @@ class IncidentService:
         else:
             messages.append({"role": "assistant", "content": content})
         hermes["messages"] = messages
+        if tools is not None:
+            hermes["tools"] = list(tools)
         enrichment["hermes"] = hermes
         self.store.update_incident(incident_id, enrichment=enrichment, actor="bridge")
         try:
@@ -867,6 +1020,8 @@ class IncidentService:
         assistant_text: str,
         *,
         error: str | None,
+        tools: list[dict[str, Any]] | None = None,
+        run_id: str | None = None,
     ) -> None:
         incident = self.store.get_incident(incident_id)
         if incident is None:
@@ -876,7 +1031,6 @@ class IncidentService:
         if hermes.get("session_id") != session_id:
             return
         messages = list(hermes.get("messages") or [])
-        # Drop the placeholder / partial assistant bubble, then write the final one.
         while messages and messages[-1].get("role") == "assistant":
             messages.pop()
         if error:
@@ -886,7 +1040,12 @@ class IncidentService:
         else:
             messages.append({"role": "assistant", "content": assistant_text or "(empty response)"})
             hermes["status"] = "complete"
+            hermes["error"] = None
         hermes["messages"] = messages
+        if tools is not None:
+            hermes["tools"] = list(tools)
+        if run_id:
+            hermes["run_id"] = run_id
         hermes["completed_at"] = utcnow()
         enrichment["hermes"] = hermes
         self.store.update_incident(
@@ -915,8 +1074,10 @@ class IncidentService:
             "incident_id": incident_id,
             "session_id": session_id,
             "stream_id": hermes.get("stream_id"),
+            "run_id": hermes.get("run_id"),
             "status": hermes.get("status"),
             "provider": provider,
+            "capabilities": hermes.get("capabilities_snapshot") or {},
             "hermes_url": hermes_url,
         }
 
@@ -952,9 +1113,12 @@ class IncidentService:
                 "session_id": session_id,
                 "status": hermes.get("status"),
                 "stream_id": hermes.get("stream_id"),
+                "run_id": hermes.get("run_id"),
                 "provider": "agent",
                 "title": incident.get("title"),
                 "messages": list(hermes.get("messages") or []),
+                "tools": list(hermes.get("tools") or []),
+                "capabilities": hermes.get("capabilities_snapshot") or {},
                 "error": hermes.get("error"),
             }
         try:

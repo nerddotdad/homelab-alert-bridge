@@ -150,20 +150,38 @@ export type AgentMessage = {
   content?: string
 }
 
+export type AgentTool = {
+  call_id?: string
+  name?: string
+  phase?: string
+  detail?: string
+}
+
 export type AgentSession = {
   session_id: string
   status?: string
   stream_id?: string
+  run_id?: string
   title?: string | null
   messages?: AgentMessage[]
+  tools?: AgentTool[]
+  capabilities?: {
+    run_stop?: boolean
+    run_approval?: boolean
+    run_events_sse?: boolean
+    run_submission?: boolean
+  }
+  error?: string | null
 }
 
 export type InvestigateResult = {
   incident_id: string
   session_id?: string
   stream_id?: string
+  run_id?: string
   status?: string
   hermes_url?: string | null
+  capabilities?: AgentSession['capabilities']
 }
 
 /** EventSource cannot send Authorization headers — pass token in query when set. */
@@ -243,6 +261,12 @@ export const api = {
       body: JSON.stringify({ message }),
     }),
 
+  agentStop: (id: string) =>
+    request<{ ok: boolean }>(`/api/incidents/${encodeURIComponent(id)}/agent/stop`, {
+      method: 'POST',
+      body: '{}',
+    }),
+
   getAgentSession: (id: string) =>
     request<AgentSession>(`/api/incidents/${encodeURIComponent(id)}/agent/session`),
 
@@ -250,6 +274,15 @@ export const api = {
     sseUrl(
       `/api/incidents/${encodeURIComponent(id)}/agent/stream?stream_id=${encodeURIComponent(streamId)}`,
     ),
+
+  aiopsCapabilities: () =>
+    request<{
+      ok: boolean
+      run_stop?: boolean
+      run_approval?: boolean
+      run_events_sse?: boolean
+      run_submission?: boolean
+    }>('/api/aiops/capabilities'),
 
   addNote: (id: string, body: string) =>
     request<{ ok: boolean }>(`/api/incidents/${encodeURIComponent(id)}/notes`, {

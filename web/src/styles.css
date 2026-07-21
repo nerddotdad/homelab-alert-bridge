@@ -623,6 +623,76 @@ textarea {
   margin-top: 10px;
 }
 
+.agent-tools {
+  display: grid;
+  gap: 8px;
+}
+
+.agent-tool {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--border) 28%, transparent);
+  font-size: 0.85rem;
+}
+
+.agent-tool.running {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.agent-tool-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.agent-tool-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 600;
+}
+
+.agent-tool-phase {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.agent-tool.running .agent-tool-phase {
+  color: var(--accent);
+}
+
+.agent-tool-detail {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 120px;
+  overflow: auto;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.agent-msg.streaming .agent-md {
+  display: inline;
+}
+
+.agent-cursor {
+  display: inline-block;
+  width: 0.55ch;
+  height: 1.1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  animation: agent-blink 1s step-end infinite;
+}
+
+@keyframes agent-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
 @media (max-width: 800px) {
   .incident-row {
     grid-template-columns: 1fr;

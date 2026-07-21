@@ -350,26 +350,49 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _proxy_hermes_stream(self, stream_id: str, incident_id: str) -> None:
-        # hearth-agent investigations store transcripts on the incident — poll via session API.
-        if stream_id.startswith("agent:"):
+        # Agent provider: fan out normalized live events from the in-memory bus.
+        if stream_id.startswith("agent:") or stream_id.startswith("run:"):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
             self.end_headers()
             try:
-                import time
+                from agent_bus import BUS
 
-                for _ in range(120):
-                    data = SERVICE.get_agent_session(incident_id) or {}
-                    status = str(data.get("status") or "")
-                    payload = json.dumps({"status": status, "messages": data.get("messages") or []})
-                    self.wfile.write(f"event: agent\ndata: {payload}\n\n".encode("utf-8"))
+                # Snapshot first so the UI has messages/tools even if the bus is quiet.
+                data = SERVICE.get_agent_session(incident_id) or {}
+                snap = {
+                    "status": data.get("status"),
+                    "messages": data.get("messages") or [],
+                    "tools": data.get("tools") or [],
+                    "capabilities": data.get("capabilities") or {},
+                    "run_id": data.get("run_id"),
+                }
+                self.wfile.write(f"event: agent\ndata: {json.dumps(snap)}\n\n".encode("utf-8"))
+                self.wfile.flush()
+
+                status = str(data.get("status") or "")
+                if status in ("complete", "error") and not BUS.is_active(stream_id):
+                    self.wfile.write(
+                        f"event: end\ndata: {json.dumps({'status': status})}\n\n".encode("utf-8")
+                    )
                     self.wfile.flush()
-                    if status in ("complete", "error"):
+                    return
+
+                for event in BUS.subscribe(stream_id, timeout=600.0):
+                    kind = str(event.get("kind") or "message")
+                    sse_name = "agent.error" if kind == "error" else kind
+                    self.wfile.write(
+                        f"event: {sse_name}\ndata: {json.dumps(event)}\n\n".encode("utf-8")
+                    )
+                    self.wfile.flush()
+                    if kind in ("end", "error"):
                         break
-                    time.sleep(2)
             except (BrokenPipeError, ConnectionResetError):
                 pass
+            except Exception as exc:
+                sys.stderr.write(f"agent stream error incident={incident_id}: {exc}\n")
             return
 
         self.send_response(200)
@@ -502,6 +525,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             hermes = REGISTRY.hermes()
             errors = hermes.connection_errors()
+            caps: dict = {}
+            if CONFIG.aiops_enabled() and hermes.provider() == "agent":
+                try:
+                    caps = hermes.agent_client().capabilities()
+                except Exception:
+                    caps = {}
             self._json(
                 200,
                 {
@@ -516,6 +545,45 @@ class Handler(BaseHTTPRequestHandler):
                     "connected": hermes.is_connected(),
                     "errors": errors,
                     "env_keys": CONFIG.hydrate_aiops_from_env() if CONFIG.aiops_enabled() else {},
+                    "capabilities": {
+                        "run_submission": bool(caps.get("run_submission")),
+                        "run_events_sse": bool(caps.get("run_events_sse")),
+                        "run_stop": bool(caps.get("run_stop")),
+                        "run_approval": bool(caps.get("run_approval")),
+                    },
+                },
+            )
+            return
+
+        if path == "/api/aiops/capabilities":
+            if not self._require_api_auth(query):
+                return
+            hermes = REGISTRY.hermes()
+            if not CONFIG.aiops_enabled() or hermes.provider() != "agent":
+                self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "run_submission": False,
+                        "run_events_sse": False,
+                        "run_stop": False,
+                        "run_approval": False,
+                    },
+                )
+                return
+            try:
+                caps = hermes.agent_client().capabilities()
+            except Exception as exc:
+                self._json(502, {"ok": False, "error": str(exc)})
+                return
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "run_submission": bool(caps.get("run_submission")),
+                    "run_events_sse": bool(caps.get("run_events_sse")),
+                    "run_stop": bool(caps.get("run_stop")),
+                    "run_approval": bool(caps.get("run_approval")),
                 },
             )
             return
@@ -1349,6 +1417,50 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(502, {"error": "agent chat failed", "detail": str(exc)})
                 return
             publish_ui("incidents", incident_id=iid, reason="agent_chat")
+            self._json(200, result)
+            return
+
+        if path.startswith("/api/incidents/") and path.endswith("/agent/stop"):
+            if not self._require_api_auth(query):
+                return
+            iid = safe_id(path[len("/api/incidents/") : -len("/agent/stop")].strip("/"))
+            try:
+                result = SERVICE.agent_stop(iid, actor="api")
+            except ValueError as exc:
+                msg = str(exc)
+                if msg == "stop_not_supported":
+                    self._json(409, {"error": "stop_not_supported"})
+                    return
+                code = 404 if "not found" in msg.lower() else 409
+                self._json(code, {"error": msg})
+                return
+            except HermesError as exc:
+                self._json(502, {"error": "agent stop failed", "detail": str(exc)})
+                return
+            self._json(200, result)
+            return
+
+        if path.startswith("/api/incidents/") and path.endswith("/agent/approval"):
+            if not self._require_api_auth(query):
+                return
+            iid = safe_id(path[len("/api/incidents/") : -len("/agent/approval")].strip("/"))
+            payload, err = self._read_json_body()
+            if err:
+                self._json(err, {"error": "invalid request"})
+                return
+            try:
+                result = SERVICE.agent_approval(iid, payload or {}, actor="api")
+            except ValueError as exc:
+                msg = str(exc)
+                if msg == "approval_not_supported":
+                    self._json(409, {"error": "approval_not_supported"})
+                    return
+                code = 404 if "not found" in msg.lower() else 409
+                self._json(code, {"error": msg})
+                return
+            except HermesError as exc:
+                self._json(502, {"error": "agent approval failed", "detail": str(exc)})
+                return
             self._json(200, result)
             return
 

@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { AgentMarkdown } from '../components/AgentMarkdown'
+import { AgentToolCard } from '../components/AgentToolCard'
 import { Icon } from '../components/Icon'
 import { AgentBadge, SeverityBadge, StatusBadge } from '../components/StatusBadge'
 import { TriageTerminal } from '../components/TriageTerminal'
@@ -14,6 +15,7 @@ import {
   faEye,
   faPaperPlane,
   faRobot,
+  faStop,
 } from '../lib/icons'
 
 export function IncidentDetailPage() {
@@ -56,6 +58,7 @@ export function IncidentDetailPage() {
 
   const openInHermesUrl = hermesChatUrl(hermesBase, hermes.session_id as string | undefined)
   const agentBusy = String(hermes.status || '') === 'running'
+  const canStop = Boolean(agent.capabilities?.run_stop) && agentBusy
 
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: ['incident', id] })
@@ -81,6 +84,10 @@ export function IncidentDetailPage() {
       invalidate()
     },
   })
+  const stopAgent = useMutation({
+    mutationFn: () => api.agentStop(id),
+    onSuccess: invalidate,
+  })
   const addNote = useMutation({
     mutationFn: () => api.addNote(id, note),
     onSuccess: () => {
@@ -91,7 +98,7 @@ export function IncidentDetailPage() {
 
   useEffect(() => {
     feedEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [agent.messages.length, agent.messages[agent.messages.length - 1]?.content])
+  }, [agent.messages.length, agent.messages[agent.messages.length - 1]?.content, agent.tools.length, agent.streaming])
 
   if (query.isLoading) {
     return <div className="panel muted">Loading incident…</div>
@@ -255,14 +262,31 @@ export function IncidentDetailPage() {
         {hermesEnabled ? (
           <>
             <div className="agent-feed" style={{ marginTop: 12 }}>
+              {agent.tools.length ? (
+                <div className="agent-tools">
+                  {agent.tools.map((t) => (
+                    <AgentToolCard
+                      key={t.call_id || t.name}
+                      name={t.name}
+                      phase={t.phase}
+                      detail={t.detail}
+                    />
+                  ))}
+                </div>
+              ) : null}
               {agent.messages.length ? (
                 agent.messages.map((msg, i) => {
                   const role = msg.role || 'message'
+                  const isLast = i === agent.messages.length - 1
+                  const showCursor = agent.streaming && role === 'assistant' && isLast
                   return (
-                    <div key={`${role}-${i}`} className={`agent-msg ${role}`}>
+                    <div key={`${role}-${i}`} className={`agent-msg ${role}${showCursor ? ' streaming' : ''}`}>
                       <div className="role">{role}</div>
                       {role === 'assistant' ? (
-                        <AgentMarkdown content={msg.content || ''} />
+                        <>
+                          <AgentMarkdown content={msg.content || ''} />
+                          {showCursor ? <span className="agent-cursor" aria-hidden /> : null}
+                        </>
                       ) : (
                         <div className="agent-msg-plain">{msg.content || ''}</div>
                       )}
@@ -307,6 +331,18 @@ export function IncidentDetailPage() {
                   disabled={agentBusy || chat.isPending}
                 />
                 <div className="actions">
+                  {canStop ? (
+                    <button
+                      className="icon-btn"
+                      type="button"
+                      title="Stop"
+                      aria-label="Stop"
+                      disabled={stopAgent.isPending}
+                      onClick={() => stopAgent.mutate()}
+                    >
+                      <Icon icon={faStop} label="Stop" spin={stopAgent.isPending} />
+                    </button>
+                  ) : null}
                   <button
                     className="icon-btn primary"
                     type="submit"
