@@ -7,40 +7,39 @@ import os
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, FrozenSet
+
+from agent.secret_sources.base import ErrorKind, FetchResult, SecretSource
 
 
 def register(ctx: Any) -> None:
     ctx.register_secret_source(HearthSecretSource())
 
 
-class HearthSecretSource:
+class HearthSecretSource(SecretSource):
     """Bulk secret source backed by Hearth's /api/aiops/secrets/export."""
 
     name = "hearth"
     label = "Hearth"
     shape = "bulk"
-    api_version = 1
 
     def is_enabled(self, cfg: dict) -> bool:
-        return bool(cfg.get("enabled"))
+        return bool(isinstance(cfg, dict) and cfg.get("enabled"))
 
     def override_existing(self, cfg: dict) -> bool:
-        return bool(cfg.get("override_existing", True))
+        return bool(isinstance(cfg, dict) and cfg.get("override_existing", True))
 
-    def protected_env_vars(self, cfg: dict):
-        token_env = str(cfg.get("token_env") or "HEARTH_SECRETS_TOKEN")
+    def protected_env_vars(self, cfg: dict) -> FrozenSet[str]:
+        token_env = str((cfg or {}).get("token_env") or "HEARTH_SECRETS_TOKEN")
         return frozenset({token_env, "HEARTH_SANDBOX_AGENT_API_KEY", "HEARTH_AGENT_API_KEY"})
 
-    def fetch(self, cfg: dict, home_path: Path):
-        try:
-            from agent.secret_sources.base import ErrorKind, FetchResult
-        except Exception:  # pragma: no cover
-            return _FallbackResult(error="Hermes SecretSource base not available", error_kind="INTERNAL")
-
+    def fetch(self, cfg: dict, home_path: Path) -> FetchResult:
         result = FetchResult()
+        cfg = cfg if isinstance(cfg, dict) else {}
         token_env = str(cfg.get("token_env") or "HEARTH_SECRETS_TOKEN")
-        token = (os.environ.get(token_env) or os.environ.get("HEARTH_SANDBOX_AGENT_API_KEY") or "").strip()
+        token = (
+            os.environ.get(token_env) or os.environ.get("HEARTH_SANDBOX_AGENT_API_KEY") or ""
+        ).strip()
         if not token:
             result.error = f"secrets.hearth.enabled is true but {token_env} is not set"
             result.error_kind = ErrorKind.NOT_CONFIGURED
@@ -75,11 +74,10 @@ class HearthSecretSource:
         if not isinstance(secrets, dict):
             secrets = raw if isinstance(raw, dict) else {}
         cleaned: dict[str, str] = {}
+        protected = self.protected_env_vars(cfg)
         for key, value in secrets.items():
             k = str(key).strip()
-            if not k:
-                continue
-            if k in self.protected_env_vars(cfg):
+            if not k or k in protected:
                 continue
             v = "" if value is None else str(value)
             if v == "":
@@ -88,9 +86,20 @@ class HearthSecretSource:
         result.secrets = cleaned
         return result
 
-
-class _FallbackResult:
-    def __init__(self, *, error: str, error_kind: str) -> None:
-        self.error = error
-        self.error_kind = error_kind
-        self.secrets: dict = {}
+    def config_schema(self) -> dict:
+        return {
+            "enabled": {"description": "Pull secrets from Hearth export API", "default": False},
+            "override_existing": {
+                "description": "Overwrite vars already set in .env/shell",
+                "default": True,
+            },
+            "export_url": {
+                "description": "Hearth secrets export URL (loopback)",
+                "default": "http://127.0.0.1:8000/api/aiops/secrets/export",
+            },
+            "token_env": {
+                "description": "Env var holding the Bearer token for export",
+                "default": "HEARTH_SECRETS_TOKEN",
+            },
+            "timeout_seconds": {"description": "Fetch wall-clock budget", "default": 15},
+        }
